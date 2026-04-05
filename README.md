@@ -1,4 +1,4 @@
-# trace-vcc-sqlite
+# jsonl-to-sqlite-vcc
 
 Claude Code の JSONL ログを SQLite に取り込み、VCC (View-oriented Conversation Compiler) と連携して Full/UI/Adaptive View を高速生成する軽量ツール。
 
