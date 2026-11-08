@@ -50,7 +50,36 @@ trace-vcc view traces.db -w "type IN ('user','assistant')" --grep "error"
 trace-vcc view traces.db -o ./output/
 ```
 
-### 4. Export — フィルタ結果を JSONL に戻す
+### 4. Search — 過去の会話を全文検索
+
+```bash
+# スペース区切りの語は AND。大文字小文字は区別しない
+trace-vcc search traces.db "migration error"
+
+# 日本語もそのまま（部分一致なので分かち書き不要）
+trace-vcc search traces.db 認証 --type user --since 2026-11-01
+
+# セッション単位でまとめる → そのまま VCC ビューを生成
+trace-vcc search traces.db "sqlite" --sessions --view -o ./output/
+
+# FTS5 の構文 (OR / NOT / NEAR / prefix*) を使う
+trace-vcc search traces.db "pytest OR ruff" --fts --sort time
+```
+
+| オプション | 説明 |
+|---|---|
+| `-s, --session` | セッション ID（前方一致） |
+| `--type` | レコード種別（複数指定可） |
+| `--tool` | tool_name の部分一致 |
+| `--since` / `--until` | タイムスタンプの範囲（`--until` は含まない） |
+| `--sort rank\|time` | 関連度順（既定）か新しい順 |
+| `-n, --limit` | 最大件数（既定 20） |
+| `--sessions` | セッションごとにヒット数を集計 |
+| `--view` | ヒットしたセッションの VCC ビューを生成 |
+
+検索対象は user / assistant / summary / system レコードの本文、thinking、ツール呼び出しの引数、ツール結果です。SQLite FTS5 の trigram トークナイザで索引を作るので、3 文字以上の語は索引で引き、2 文字以下の語は LIKE で探します。索引は ingest 時に自動で更新され、既存の DB も初回の ingest / search 時に自動で移行されます。
+
+### 5. Export — フィルタ結果を JSONL に戻す
 
 ```bash
 # VCC に直接渡したい場合
@@ -73,10 +102,13 @@ CREATE TABLE traces (
     tool_name   TEXT,                -- tool_use/tool_result から抽出
     model       TEXT,
     content     TEXT    NOT NULL,    -- 元の JSON をそのまま保存
+    text        TEXT,                -- 検索用に抜き出した本文
     source_file TEXT    NOT NULL,
     ingested_at TEXT    NOT NULL
 );
 ```
+
+全文検索用に `traces_fts`（FTS5, trigram, `traces.text` を外部コンテンツとして参照）とトリガーを作ります。
 
 インデックス: `session_id`, `type`, `timestamp`, `tool_name`, `(session_id, line_num)`, `(source_file, line_num)` (UNIQUE)
 
@@ -127,7 +159,10 @@ Raw(disk) は毎回ファイルから再読み込み+パース。Raw(mem) はメ
 trace_vcc_sqlite/
   __init__.py      # パッケージ
   schema.sql       # DDL
+  fts.sql          # 全文検索インデックスとトリガー
   ingest.py        # JSONL → SQLite
+  textextract.py   # レコードから検索用テキストを抽出
+  search.py        # 全文検索
   adapter.py       # SQLite → VCC 入力
   cli.py           # CLI エントリポイント
 ```

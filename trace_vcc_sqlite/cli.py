@@ -1,9 +1,12 @@
 """CLI entry point for trace-vcc-sqlite."""
 
+import sys
+
 import click
 
-from trace_vcc_sqlite.ingest import ingest_path
-from trace_vcc_sqlite.adapter import export_jsonl, run_vcc, query_traces
+from trace_vcc_sqlite.adapter import export_jsonl, run_vcc
+from trace_vcc_sqlite.ingest import _init_db, ingest_path
+from trace_vcc_sqlite.search import HIT_END, HIT_START, search, search_sessions
 
 
 @click.group()
@@ -132,3 +135,93 @@ def query(db_path, raw_sql):
             click.echo(f"  {row[0]}: {row[1]}")
 
     conn.close()
+
+
+def _render_snippet(snippet: str, color: bool) -> str:
+    if color:
+        parts = []
+        for i, chunk in enumerate(snippet.split(HIT_START)):
+            if i == 0:
+                parts.append(chunk)
+                continue
+            hit, _, rest = chunk.partition(HIT_END)
+            parts.append(click.style(hit, fg="yellow", bold=True) + rest)
+        return "".join(parts)
+    return snippet.replace(HIT_START, "[").replace(HIT_END, "]")
+
+
+@cli.command("search")
+@click.argument("db_path", type=click.Path(exists=True))
+@click.argument("query")
+@click.option("-s", "--session", default=None, help="Session id (prefix match).")
+@click.option("--type", "types", multiple=True,
+              help="Record type to include (repeatable): user, assistant, ...")
+@click.option("--tool", default=None,
+              help="Only records whose tool_name contains this.")
+@click.option("--since", default=None, help="Timestamp lower bound, e.g. 2026-11-01.")
+@click.option("--until", default=None, help="Timestamp upper bound (exclusive).")
+@click.option("--sort", type=click.Choice(["rank", "time"]), default="rank",
+              show_default=True, help="Order hits by relevance or newest first.")
+@click.option("-n", "--limit", default=20, show_default=True, help="Max results.")
+@click.option("--sessions", "by_session", is_flag=True,
+              help="Group hits by session instead of listing each record.")
+@click.option("--fts", "raw_fts", is_flag=True,
+              help="Treat QUERY as raw FTS5 syntax (OR, NOT, NEAR, prefix*).")
+@click.option("--view", "make_view", is_flag=True,
+              help="Generate VCC views for the matching sessions.")
+@click.option("-o", "--output-dir", default=None, help="Output directory for --view.")
+def search_cmd(db_path, query, session, types, tool, since, until, sort, limit,
+               by_session, raw_fts, make_view, output_dir):
+    """Full-text search over conversation text.
+
+    Space-separated terms are AND-ed and matched as substrings (case-insensitive),
+    so Japanese works without word splitting. Quote a phrase to keep it together.
+
+    Examples:
+
+      trace-vcc search traces.db "migration error"
+
+      trace-vcc search traces.db 認証 --type user --since 2026-11-01
+
+      trace-vcc search traces.db "sqlite" --sessions --view
+    """
+    import sqlite3
+
+    conn = _init_db(db_path)  # also adds the search index to older databases
+    opts = dict(raw_fts=raw_fts, session=session, types=types, tool=tool,
+                since=since, until=until)
+    try:
+        if by_session or make_view:
+            results = search_sessions(conn, query, limit=limit, **opts)
+        else:
+            results = search(conn, query, sort=sort, limit=limit, **opts)
+    except sqlite3.OperationalError as e:
+        raise click.ClickException(f"Search failed: {e}") from e
+    finally:
+        conn.close()
+
+    if not results:
+        click.echo("No matches.")
+        return
+
+    color = sys.stdout.isatty()
+    for r in results:
+        if by_session or make_view:
+            span = f"{(r.first_ts or '?')[:16]} .. {(r.last_ts or '?')[:16]}"
+            click.echo(f"{r.session_id}  {r.hits} hit(s)  {span}")
+        else:
+            meta = f"{(r.timestamp or '?')[:19]}  {r.session_id[:8]}:{r.line_num}"
+            meta += f"  {r.type or '?'}"
+            if r.tool_name:
+                meta += f" ({r.tool_name})"
+            click.echo(click.style(meta, dim=True) if color else meta)
+        click.echo(f"  {_render_snippet(r.snippet, color)}")
+
+    if make_view:
+        ids = [r.session_id for r in results]
+        where = f"session_id IN ({','.join('?' * len(ids))})"
+        files = run_vcc(db_path, where=where, params=tuple(ids),
+                        output_dir=output_dir)
+        click.echo("\nGenerated:")
+        for f in files:
+            click.echo(f"  {f}")

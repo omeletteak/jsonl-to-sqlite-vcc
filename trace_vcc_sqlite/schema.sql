@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS traces (
     tool_name   TEXT,                       -- extracted from tool_use blocks or tool_result
     model       TEXT,                       -- model name from assistant messages
     content     TEXT    NOT NULL,           -- full JSON object as string
+    text        TEXT,                       -- searchable plain text (see textextract.py)
     source_file TEXT    NOT NULL,           -- path of the original JSONL file
     ingested_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
