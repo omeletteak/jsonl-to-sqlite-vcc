@@ -106,4 +106,4 @@ def run_vcc(db_path: str, where: str = "", params: tuple = (),
     if result.stdout.strip():
         print(result.stdout.strip())
 
-    return sorted(output_files)
+    return sorted(set(output_files))  # *.txt also matches *.min.txt

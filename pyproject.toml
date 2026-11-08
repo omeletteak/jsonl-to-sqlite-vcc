@@ -33,3 +33,6 @@ select = ["E", "F", "I", "W"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.setuptools.package-data]
+trace_vcc_sqlite = ["*.sql"]

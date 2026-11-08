@@ -1,20 +1,59 @@
 """Ingest Claude Code JSONL log files into SQLite."""
 
+from __future__ import annotations
+
 import json
 import os
 import sqlite3
 from pathlib import Path
 
+from trace_vcc_sqlite.textextract import extract_text
 
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+_FTS_PATH = Path(__file__).parent / "fts.sql"
+
+
+def _has_table(conn: sqlite3.Connection, name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name = ?", (name,)
+    ).fetchone()
+    return row is not None
+
+
+def _backfill_text(conn: sqlite3.Connection) -> None:
+    """Fill traces.text for rows ingested before the column existed."""
+    rows = conn.execute("SELECT id, content FROM traces WHERE text IS NULL")
+    updates = []
+    for row_id, content in rows:
+        try:
+            text = extract_text(json.loads(content))
+        except json.JSONDecodeError:
+            continue
+        if text:
+            updates.append((text, row_id))
+    conn.executemany("UPDATE traces SET text = ? WHERE id = ?", updates)
 
 
 def _init_db(db_path: str) -> sqlite3.Connection:
-    """Open (or create) the database and apply schema."""
+    """Open (or create) the database, apply schema and migrate old databases."""
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(_SCHEMA_PATH.read_text())
+
+    # Databases created before full-text search lack the text column.
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(traces)")}
+    if "text" not in cols:
+        conn.execute("ALTER TABLE traces ADD COLUMN text TEXT")
+
+    fts_existed = _has_table(conn, "traces_fts")
+    conn.executescript(_FTS_PATH.read_text())
+    if not fts_existed:
+        # Triggers keep the index in sync from here on; fill it once for
+        # whatever is already in the table.
+        _backfill_text(conn)
+        conn.execute("INSERT INTO traces_fts(traces_fts) VALUES ('rebuild')")
+    conn.commit()
     return conn
 
 
@@ -82,17 +121,21 @@ def ingest_file(conn: sqlite3.Connection, jsonl_path: str) -> int:
                 _extract_tool_name(record),
                 _extract_model(record),
                 line,  # raw JSON string
+                extract_text(record),
                 jsonl_path,
             ))
 
     if not rows:
         return 0
 
+    # Re-ingesting a file replaces its rows. A plain DELETE (rather than
+    # INSERT OR REPLACE) fires the triggers that keep the search index in sync.
+    conn.execute("DELETE FROM traces WHERE source_file = ?", (jsonl_path,))
     conn.executemany(
-        """INSERT OR REPLACE INTO traces
+        """INSERT INTO traces
            (session_id, line_num, type, subtype, timestamp, uuid, parent_uuid,
-            tool_name, model, content, source_file)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            tool_name, model, content, text, source_file)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         rows,
     )
     conn.commit()
