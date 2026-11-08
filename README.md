@@ -137,8 +137,12 @@ trace_vcc_sqlite/
 - Python >= 3.9
 - click >= 8.0
 - SQLite3 (Python 標準ライブラリ)
-- VCC.py (conversation-compiler skill)
+- VCC.py (conversation-compiler skill) — [lllyasviel/VCC](https://github.com/lllyasviel/VCC) から同梱
+
+## クレジット
+
+VCC 本体と `.claude/skills/` 配下の skill は [lllyasviel/VCC](https://github.com/lllyasviel/VCC) (Apache License 2.0) のものを無改変で同梱しています。同梱元コミットと更新手順は [`.claude/skills/UPSTREAM.md`](.claude/skills/UPSTREAM.md) を参照してください。
 
 ## License
 
-MIT
+MIT (このリポジトリ独自のコード)。`.claude/skills/` 配下は Apache License 2.0 ([`.claude/skills/LICENSE`](.claude/skills/LICENSE))。
